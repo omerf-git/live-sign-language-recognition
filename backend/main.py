@@ -1,13 +1,10 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import torch
-import torch.nn as nn
-import cv2
-import numpy as np
 from PIL import Image
 import io
 import base64
+import random
 from typing import List
 import uvicorn
 
@@ -30,52 +27,35 @@ TID_GLOSSES = [
     "anne", "baba", "kardeş", "arkadaş", "öğretmen", "doktor", "polis"
 ]
 
-class SimpleCNN(nn.Module):
-    """Simple CNN model for sign language recognition simulation"""
-    def __init__(self, num_classes=len(TID_GLOSSES)):
-        super(SimpleCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(128 * 28 * 28, 512)
-        self.fc2 = nn.Linear(512, num_classes)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.3)
+def mock_predict(image_data: bytes) -> tuple:
+    """Mock prediction function that returns random results"""
+    # For demo purposes, return random predictions
+    predicted_class = random.randint(0, len(TID_GLOSSES) - 1)
+    confidence = random.uniform(0.4, 0.95)
+    
+    # 30% chance to show "no sign detected"
+    if random.random() < 0.3:
+        return "no_sign_detected", 0.1
+    
+    return TID_GLOSSES[predicted_class], confidence
+
+def preprocess_frame(image_data: bytes) -> bool:
+    """Simple preprocessing to validate image"""
+    try:
+        # Convert bytes to PIL Image
+        image = Image.open(io.BytesIO(image_data))
         
-    def forward(self, x):
-        x = self.pool(self.relu(self.conv1(x)))
-        x = self.pool(self.relu(self.conv2(x)))
-        x = self.pool(self.relu(self.conv3(x)))
-        x = x.view(x.size(0), -1)
-        x = self.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        return x
-
-# Initialize model (in production, load pretrained weights)
-model = SimpleCNN()
-model.eval()
-
-def preprocess_frame(image_data: bytes) -> torch.Tensor:
-    """Preprocess image frame for model input"""
-    # Convert bytes to PIL Image
-    image = Image.open(io.BytesIO(image_data))
-    
-    # Convert to RGB if needed
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    
-    # Resize to model input size (224x224)
-    image = image.resize((224, 224))
-    
-    # Convert to numpy array and normalize
-    img_array = np.array(image) / 255.0
-    
-    # Convert to torch tensor and add batch dimension
-    tensor = torch.FloatTensor(img_array).permute(2, 0, 1).unsqueeze(0)
-    
-    return tensor
+        # Convert to RGB if needed
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Resize to standard size
+        image = image.resize((224, 224))
+        
+        return True
+    except Exception as e:
+        print(f"Preprocessing error: {e}")
+        return False
 
 @app.get("/")
 async def root():
@@ -93,36 +73,17 @@ async def predict_sign(file: UploadFile = File(...)):
         image_data = await file.read()
         
         # Preprocess the frame
-        input_tensor = preprocess_frame(image_data)
+        if not preprocess_frame(image_data):
+            raise HTTPException(status_code=400, detail="Invalid image data")
         
-        # Run inference
-        with torch.no_grad():
-            outputs = model(input_tensor)
-            probabilities = torch.softmax(outputs, dim=1)
-            predicted_class = torch.argmax(probabilities, dim=1).item()
-            confidence = probabilities[0][predicted_class].item()
-        
-        # Get predicted gloss
-        predicted_gloss = TID_GLOSSES[predicted_class]
-        
-        # For demo purposes, add some randomness to make it more realistic
-        # In production, this would be the actual model prediction
-        import random
-        if random.random() < 0.3:  # 30% chance to show "no sign detected"
-            predicted_gloss = "no_sign_detected"
-            confidence = 0.1
+        # Run mock prediction
+        predicted_gloss, confidence = mock_predict(image_data)
         
         return JSONResponse({
             "success": True,
             "predicted_gloss": predicted_gloss,
             "confidence": round(confidence, 3),
-            "all_predictions": [
-                {
-                    "gloss": gloss,
-                    "confidence": round(probabilities[0][i].item(), 3)
-                }
-                for i, gloss in enumerate(TID_GLOSSES[:5])  # Top 5 predictions
-            ]
+            "timestamp": str(random.randint(1000000000, 9999999999))
         })
         
     except Exception as e:
@@ -145,29 +106,17 @@ async def predict_sign_base64(data: dict):
         image_data = base64.b64decode(image_base64)
         
         # Preprocess the frame
-        input_tensor = preprocess_frame(image_data)
+        if not preprocess_frame(image_data):
+            raise HTTPException(status_code=400, detail="Invalid image data")
         
-        # Run inference
-        with torch.no_grad():
-            outputs = model(input_tensor)
-            probabilities = torch.softmax(outputs, dim=1)
-            predicted_class = torch.argmax(probabilities, dim=1).item()
-            confidence = probabilities[0][predicted_class].item()
-        
-        # Get predicted gloss
-        predicted_gloss = TID_GLOSSES[predicted_class]
-        
-        # For demo purposes, add some randomness
-        import random
-        if random.random() < 0.3:
-            predicted_gloss = "no_sign_detected"
-            confidence = 0.1
+        # Run mock prediction
+        predicted_gloss, confidence = mock_predict(image_data)
         
         return JSONResponse({
             "success": True,
             "predicted_gloss": predicted_gloss,
             "confidence": round(confidence, 3),
-            "timestamp": str(np.datetime64('now'))
+            "timestamp": str(random.randint(1000000000, 9999999999))
         })
         
     except Exception as e:
@@ -179,4 +128,5 @@ async def get_available_glosses():
     return {"glosses": TID_GLOSSES}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
